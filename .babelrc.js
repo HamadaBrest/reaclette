@@ -11,6 +11,9 @@ const configs = {
   "@babel/plugin-proposal-decorators": {
     legacy: true,
   },
+  "@babel/plugin-proposal-pipeline-operator": {
+    proposal: "minimal",
+  },
   "@babel/preset-env"(pkg) {
     return {
       debug: !__TEST__,
@@ -23,8 +26,8 @@ const configs = {
           while (trimChars.includes(node[0])) {
             node = node.slice(1);
           }
-          return { node: node };
         }
+        return { browsers: pkg.browserslist, node };
       })(),
       useBuiltIns: "@babel/polyfill" in (pkg.dependencies || {}) && "usage",
     };
