@@ -1,308 +1,170 @@
-// React does not support symbols :/
-const TAG = 'reaclette'
+const { assign, create, keys } = Object;
 
-const call = f => f()
-const isPromise = v => v != null && typeof v.then === 'function'
-const noop = Function.prototype
-const { create, keys } = Object
+class Spy {
+  constructor (keys, accessor) {
+    this.reset()
 
-const makeSpy = (keys, accessor) => {
-  const descriptors = create(null)
-  const spy = new Map()
-  keys.forEach(k => {
-    descriptors[k] = {
-      enumerable: true,
-      get: () => {
-        let v = spy.get(k)
-        if (v === undefined && !spy.has(k)) {
-          v = accessor(k)
-          spy.set(k, v)
-        }
-        return v
-      },
-    }
-  })
-  spy.upToDate = () => {
-    for (const [key, value] of spy) {
-      if (accessor(key) !== value) {
-        return false
+    const descriptors = keys.forEach(k => {
+      descriptors[k] = {
+        enumerable: true,
+        get: () => {
+          const values = this._values
+          let v = values[k]
+          if (v === undefined && !(k in values)) {
+            v = values[k] = accessor(k)
+          }
+          return v
+        },
       }
-    }
-    return true
+    })
+
+    this.isUpToDate = keys.every.bind(key, k => accessor(k) === this._values[k])
   }
-  return [create(null, descriptors), spy]
+
+  reset () {
+    this._values = create(null)
+  }
 }
 
-module.exports = ({ Component, createElement, PropTypes }) => {
-  const contextTypes_ = {
-    [TAG]:
-      PropTypes !== undefined
-        ? PropTypes.shape({
-          effects: PropTypes.object.isRequired,
-          state: PropTypes.object.isRequired,
-          subscribe: PropTypes.func.isRequired,
-        })
-        : noop,
-  }
+module.exports = function createReaclette({
+  Component,
+  createElement,
+  PropTypes,
+}) {
+  function withStore({ computed, effects, initialState }, render) {
+    const effectNames = effects !== undefined ? keys(effects) : [];
+    const computedNames = computed !== undefined ? keys(computed) : [];
 
-  const injectState = ChildComponent =>
-    class StateInjector extends Component {
-      static WrappedComponent = ChildComponent;
+    class Store {
+      constructor(component) {
+        this._component = component;
 
-      static contextTypes = contextTypes_;
+        // it would be nice to throw when accessing non existing entries
+        const stateProxy = this.state = {}
 
-      constructor (_, context) {
-        super()
+        const state = this._state = create(null)
+        Object.assign(state, initialState(component.props))
+        const stateKeys = keys(this._state)
 
-        const parent = context[TAG]
-        if (parent === undefined) {
-          throw new TypeError('missing state')
-        }
+        const propsKeys = keys(component.props)
 
-        const { state } = parent;
-        [this._stateProxy, this._stateSpy] = makeSpy(
-          parent.stateKeys,
-          k => state[k]
-        )
-      }
+        if (computedNames.length !== 0) {
+          const descriptors = {}
+          const getProp = name => this.props[name]
+          const getState = name => this.state[name]
 
-      componentDidMount () {
-        const spy = this._stateSpy
-        this.componentWillUnmount = this.context[TAG].subscribe(() => {
-          if (!spy.upToDate()) {
-            this.forceUpdate()
-          }
-        })
-      }
+          computedNames.forEach(name => {
+            const computed = computeds[name]
+            let previousValue, propsSpy, stateSpy
 
-      render () {
-        this._stateSpy.clear()
-
-        return createElement(ChildComponent, {
-          ...this.props,
-          effects: this.context[TAG].effects,
-          state: this._stateProxy,
-        })
-      }
-    }
-
-  const provideState = ({ computed, effects, initialState }) => {
-    const wrapComponentWithState = ChildComponent => {
-      class StateProvider extends Component {
-        static WrappedComponent = (ChildComponent != null &&
-          ChildComponent.WrappedComponent) ||
-          ChildComponent;
-        static wrapComponentWithState = wrapComponentWithState;
-
-        static childContextTypes = contextTypes_;
-        static contextTypes = contextTypes_;
-
-        constructor (props, context) {
-          super()
-
-          const listeners = new Set()
-          const dispatch = (this._dispatch = () => {
-            // computedCache.clear()
-            listeners.forEach(call)
-          })
-          this._subscribe = listener => {
-            listeners.add(listener)
-            return () => {
-              listeners.delete(listener)
-            }
-          }
-
-          const stateDescriptors = create(null)
-
-          if (computed !== undefined) {
-            const propsKeys = keys(props)
-            const propsAccessor = k => this.props[k]
-            const stateAccessor = k => completeState[k]
-
-            keys(computed).forEach(k => {
-              const c = computed[k]
-              let previousValue, propsProxy, propsSpy, stateProxy, stateSpy
-              stateDescriptors[k] = {
-                get: () => {
-                  if (propsProxy === undefined) {
-                    [propsProxy, propsSpy] = makeSpy(propsKeys, propsAccessor);
-                    [stateProxy, stateSpy] = makeSpy(
-                      completeStateKeys,
-                      stateAccessor
-                    )
-                  } else if (propsSpy.upToDate() && stateSpy.upToDate()) {
-                    return isPromise(previousValue) ? undefined : previousValue
-                  }
-
-                  propsSpy.clear()
-                  stateSpy.clear()
-                  previousValue = c(stateProxy, propsProxy)
-                  if (!isPromise(previousValue)) {
-                    return previousValue
-                  }
-
-                  // rejections are explicitly not handled
-                  const promise = previousValue
-                  previousValue.then(
-                    value => {
-                      if (previousValue === promise) {
-                        previousValue = value
-                        dispatch()
-                      }
-                    }
-                  )
-                },
-              }
-            })
-          }
-
-          let state
-          if (initialState !== undefined) {
-            state = initialState(props)
-
-            keys(state).forEach(k => {
-              if (!(k in stateDescriptors)) {
-                // only local, non-computed state entries are enumerable
-                stateDescriptors[k] = {
-                  enumerable: true,
-                  get: () => state[k],
-                  set: value => {
-                    state = { ...state, [k]: value }
-                    dispatch()
-                  },
+            descriptors[name] = {
+              enumerable: true,
+              get: () => {
+                if (propsSpy === undefined) {
+                  propsSpy = new Spy(propsKeys, getProp)
+                  stateSpy = new Spy(stateKeys, getState)
+                } else if (propsSpy.upToDate() && stateSpy.upToDate()) {
+                  return previousValue
                 }
+
+                propsSpy.reset()
+                stateSpy.reset()
+                return previousValue = computed(propsSpy.proxy, stateSpy.proxy)
               }
-            })
-          }
-
-          let parentEffects = null
-          let parentState = null
-          let parentStateKeys = []
-          {
-            const parent = context[TAG]
-            if (parent !== undefined) {
-              parentEffects = parent.effects
-              parentState = parent.state
-              parentStateKeys = parent.stateKeys
-            }
-          }
-
-          const completeState = (this._state = create(
-            parentState,
-            stateDescriptors
-          ))
-          const completeStateKeys = (this._stateKeys = keys(stateDescriptors))
-
-          parentStateKeys.forEach(k => {
-            if (!(k in stateDescriptors)) {
-              completeStateKeys.push(k)
             }
           })
 
-          let effectsDescriptors
-          if (effects !== undefined) {
-            const setState = newState => {
-              if (newState == null) {
-                return
-              }
+          defineProperties(this.state, descriptors)
+        }
 
-              if (typeof newState === 'function') {
-                return setState(newState(completeState, this.props))
-              }
-
-              const { then } = newState
-              if (typeof then === 'function') {
-                return then.call(newState, setState)
-              }
-
-              state = { ...state, ...newState }
-              dispatch()
+        this.effects = {};
+        if (effectNames.length !== 0) {
+          const updateState = values => {
+            if (values == null) {
+              return;
             }
 
-            effectsDescriptors = create(null)
-            keys(effects).forEach(k => {
-              const e = effects[k]
-              const wrappedEffect = (...args) => {
-                try {
-                  return Promise.resolve(setState(e.call({
-                    effects: this._effects,
-                    props: this.props,
-                    state: completeState,
-                  }, this._effects, ...args)))
-                } catch (error) {
-                  return Promise.reject(error)
-                }
-              }
+            if (typeof values === "function") {
+              return setState(values(this.state, this._component.props));
+            }
 
-              // this special effects are not callable manually and not inheritable
-              if (k === 'initialize' || k === 'finalize') {
-                this[k] = wrappedEffect
-              } else {
-                effectsDescriptors[k] = {
-                  enumerable: true,
-                  value: wrappedEffect,
-                }
-              }
-            })
-          }
-          this._effects = create(parentEffects, effectsDescriptors)
-        }
+            const { then } = values;
+            if (typeof then === "function") {
+              return then.call(values, updateState);
+            }
 
-        _unsubscribe = noop;
+            this._updateState(values);
+          };
 
-        componentDidMount () {
-          const parent = this.context[TAG]
-          if (parent !== undefined) {
-            this._unsubscribe = parent.subscribe(this._dispatch)
-          }
+          effectNames.forEach(name => {
+            const effect = effects[name];
 
-          const { initialize } = this
-          if (initialize !== undefined) {
-            initialize()
-          }
-        }
-
-        componentDidUpdate () {
-          this._dispatch()
-        }
-
-        componentWillUnmount () {
-          const { finalize } = this
-          if (finalize !== undefined) {
-            finalize()
-          }
-
-          this._unsubscribe()
-          this._unsubscribe = noop
-        }
-
-        getChildContext () {
-          return {
-            [TAG]: {
-              effects: this._effects,
-              state: this._state,
-              stateKeys: this._stateKeys,
-              subscribe: this._subscribe,
-            },
-          }
-        }
-
-        render () {
-          return createElement(ChildComponent, this.props)
+            async function wrappedEffect() {
+              await this._updateState(effect.apply(this, arguments));
+            }
+          });
         }
       }
 
-      if (ChildComponent === undefined) {
-        const stateProvider = new StateProvider({}, {})
-        return {
-          getState: () => stateProvider._state,
-          effects: stateProvider._effects,
+      resetState() {
+        this._updateState(initialState(this._component.props));
+      }
+
+      _updateState(values) {
+        const changed = create(null);
+        let hasChanged = false
+        const state = this._state;
+        keys(values).forEach(name => {
+          if (!(name in state)) {
+            throw new Error(`state entry ${name} has not been created by initialState`)
+          }
+          const value = values[name];
+          if (value !== state[name]) {
+            changed[name] = state[name] = value;
+            hasChanged = true
+          }
+        });
+
+        if (hasChanged) {
+          this._subscribers.forEach(subscriber => {
+            subscriber(changed);
+          });
         }
       }
-      return StateProvider
+
+      _subscribe(cb) {
+        const subscribers = this._subscribers;
+        subscribers.add(cb);
+        return subscribers.delete.bind(subscribers, cb);
+      }
     }
-    return wrapComponentWithState
+
+    class EnhancedComponent extends Component {
+      constructor(props) {
+        super(props)
+        this._store = new Store(this);
+      }
+
+      componentDidMount() {
+        const { initialize } = this._store;
+        if (initialize !== undefined) {
+          initialize();
+        }
+      }
+
+      componentWillUnmount() {
+        const { finalize } = this._store;
+        if (finalize !== undefined) {
+          finalize();
+        }
+      }
+
+      render() {
+        return render(this._store, this.props);
+      }
+    }
+    return EnhancedComponent;
   }
 
-  return { injectState, provideState }
-}
+  return { withStore };
+};
