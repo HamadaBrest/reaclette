@@ -61,7 +61,6 @@ module.exports = ({ Component }) => {
         const stateKeys = keys(state);
         stateKeys.forEach(key => {
           stateProxyDescriptors[key] = {
-            enumerable: true,
             get: () => state[key],
           };
         });
@@ -177,7 +176,6 @@ module.exports = ({ Component }) => {
           const stateProxyDescriptors = {};
           stateKeys.forEach(key => {
             stateProxyDescriptors[key] = {
-              enumerable: true,
               get: () => state[key],
               set: value => {
                 state[key] = value;
