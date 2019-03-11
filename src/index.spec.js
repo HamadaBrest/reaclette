@@ -46,27 +46,27 @@ const makeTestInstance = (opts, props) => {
 const noop = () => {};
 
 describe("withStore", () => {
-  describe("initialState", () => {
-    it("is called with the props to create the initial state", () => {
-      const props = { bar: "baz" };
-      expect(
-        makeTestInstance(
-          {
-            initialState: (...args) => {
-              expect(args).toEqual([props]);
-              return { foo: "bar" };
-            },
+  describe("render function", () => {
+    it("receives the store as first param with effects, state and resetState", async () => {
+      const { getRenderArgs } = makeTestInstance({
+        initialState: () => ({
+          foo: "bar",
+        }),
+        effects: {
+          changeState(value) {
+            this.state.foo = value;
           },
-          props
-        ).getState().foo
-      ).toBe("bar");
-    });
-  });
+        },
+      });
 
-  describe("resetState", () => {
-    it("resets the state by calling initialState from effects", async () => {
+      expect(getRenderArgs()[0]).toHaveProperty("effects");
+      expect(getRenderArgs()[0]).toHaveProperty("resetState");
+      expect(getRenderArgs()[0]).toHaveProperty("state");
+    });
+
+    it("receives the props as second param", () => {
       const props = { bar: "baz" };
-      const { effects, getState } = makeTestInstance(
+      const { getRenderArgs } = makeTestInstance(
         {
           initialState: () => ({
             foo: "bar",
@@ -75,75 +75,182 @@ describe("withStore", () => {
             changeState(value) {
               this.state.foo = value;
             },
-            async reset() {
-              await this.resetState();
-            },
           },
         },
         props
       );
-      await effects.changeState("foo");
-      expect(getState().foo).toBe("foo");
-      await effects.reset();
-      expect(getState().foo).toBe("bar");
+      expect(getRenderArgs()[1]).toHaveProperty("bar");
+    });
+
+    it("returns the React tree to render", () => {
+      // SKIPPED
     });
   });
 
-  it("resets the state by calling initialState from child", async () => {
-    const props = { bar: "baz" };
-    const { effects, getState, getRenderArgs } = makeTestInstance(
-      {
+  describe("computed", () => {
+    it("can read state and computed entries", () => {
+      const { getState } = makeTestInstance({
         initialState: () => ({
           foo: "bar",
         }),
-        effects: {
-          changeState(value) {
-            this.state.foo = value;
-          },
+        computed: {
+          qux: ({ foo }) => foo,
+          corge: ({ qux }) => qux,
         },
-      },
-      props
-    );
+      });
 
-    await effects.changeState("foo");
-    expect(getState().foo).toBe("foo");
-    await getRenderArgs()[0].resetState();
-    expect(getState().foo).toBe("bar");
-  });
-
-  it("receives the store as first param with effects, state and resetState", async () => {
-    const { getRenderArgs } = makeTestInstance({
-      initialState: () => ({
-        foo: "bar",
-      }),
-      effects: {
-        changeState(value) {
-          this.state.foo = value;
-        },
-      },
+      expect(getState().qux).toBe("bar");
+      expect(getState().corge).toBe("bar");
     });
 
-    expect(getRenderArgs()[0]).toHaveProperty("effects");
-    expect(getRenderArgs()[0]).toHaveProperty("resetState");
-    expect(getRenderArgs()[0]).toHaveProperty("state");
-  });
-
-  it("receives the props as second param", async () => {
-    const props = { bar: "baz" };
-    const { getRenderArgs } = makeTestInstance(
-      {
+    it("cannot write state", () => {
+      const { getState } = makeTestInstance({
         initialState: () => ({
           foo: "bar",
         }),
-        effects: {
-          changeState(value) {
-            this.state.foo = value;
+        computed: {
+          qux: ({ foo }) => {
+            this.state.foo = "fred";
+            return foo;
           },
         },
-      },
-      props
-    );
-    expect(getRenderArgs()[1]).toHaveProperty("bar");
+      });
+
+      expect(() => getState().qux).toThrowError(
+        new TypeError("Cannot set property 'foo' of undefined")
+      );
+    });
+
+    it("cannot write computed entries", () => {
+      const { getState } = makeTestInstance({
+        initialState: () => ({
+          foo: "bar",
+        }),
+        computed: {
+          qux: ({ foo }) => foo,
+          corge: ({ qux }) => {
+            this.state.qux = "thud";
+            return qux;
+          },
+        },
+      });
+
+      expect(() => {
+        return getState().corge;
+      }).toThrowError(new TypeError("Cannot set property 'qux' of undefined"));
+    });
+
+    it("cannot add new state entries", () => {
+      const { getState } = makeTestInstance({
+        initialState: () => ({}),
+        computed: {
+          qux: () => {
+            this.state.corge = "baz";
+          },
+        },
+      });
+
+      expect(() => {
+        return getState().qux;
+      }).toThrowError(
+        new TypeError("Cannot set property 'corge' of undefined")
+      );
+    });
+
+    it("cannot access itself", () => {
+      const { getState } = makeTestInstance({
+        initialState: () => ({}),
+        computed: {
+          circularComputed: ({ circularComputed }) => {},
+        },
+      });
+
+      expect(() => {
+        return getState().circularComputed;
+      }).toThrowError(new CircularComputedError("circularComputed"));
+    });
+
+    it("can read props", () => {
+      const props = { bar: 2 };
+      const { getState } = makeTestInstance(
+        {
+          initialState: () => ({}),
+          computed: {
+            baz: (_, { bar }) => bar * 2,
+          },
+        },
+        props
+      );
+
+      expect(getState().baz).toBe(4);
+    });
+
+    it("are not called when its state/props dependencies do not change", async () => {
+      const baz = jest.fn(({ qux }, { bar }) => bar * qux);
+      const props = { bar: 2, thud: 9 };
+      const { effects, getState, setParentProps } = makeTestInstance(
+        {
+          initialState: () => ({ qux: 1, corge: 4 }),
+          effects: {
+            changeState() {
+              this.state.corge = 8;
+            },
+          },
+          computed: {
+            baz,
+          },
+        },
+        props
+      );
+
+      setParentProps({ thud: 8 });
+      await effects.changeState();
+      noop(getState().baz);
+      expect(baz.mock.calls.length).toBe(1);
+    });
+
+    it("is called when its state dependencies change", async () => {
+      const baz = jest.fn(({ bar }) => bar * 2);
+      const { effects, getState } = makeTestInstance({
+        initialState: () => ({ bar: 3 }),
+        effects: {
+          changeState() {
+            this.state.bar = 5;
+          },
+        },
+        computed: {
+          baz,
+        },
+      });
+
+      expect(getState().baz).toBe(6);
+      await effects.changeState();
+      expect(getState().baz).toBe(10);
+      expect(baz).toHaveBeenCalledTimes(2);
+    });
+
+    it("is called when its props dependencies change", async () => {
+      const baz = jest.fn((_, { qux }) => qux * 2);
+      const props = { qux: 2 };
+      const { getState, setParentProps } = makeTestInstance(
+        {
+          initialState: () => ({ bar: 3 }),
+          computed: {
+            baz,
+          },
+        },
+        props
+      );
+
+      expect(getState().baz).toBe(4);
+      setParentProps({ qux: 4 });
+      expect(getState().baz).toBe(8);
+      expect(baz).toHaveBeenCalledTimes(2);
+    });
+
+    it("can be async", async () => {
+      // undone
+    });
   });
 
   // describe("effects", () => {
